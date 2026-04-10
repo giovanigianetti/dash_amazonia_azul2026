@@ -1243,6 +1243,8 @@ function renderMunicipalityMap(row, comparisonDims) {
 
   const zVals = groupRows.map(r => quartileBucket(r[varCol], breaks));
   const locs = groupRows.map(r => municipalityCode(r));
+  const groupCodeSet = new Set(locs);
+  const otherLocations = allLocations.filter(code => !groupCodeSet.has(code));
   const labels = groupRows.map(r => municipalityOptionLabel(r));
   const customdata = groupRows.map(r => [
     formatNumber(r[varCol], varCol),
@@ -1254,13 +1256,13 @@ function renderMunicipalityMap(row, comparisonDims) {
     type: 'choropleth',
     geojson: appState.municipalityGeojson,
     featureidkey: 'properties.id',
-    locations: allLocations,
-    z: allLocations.map(() => 0),
+    locations: otherLocations,
+    z: otherLocations.map(() => 0),
     zmin: 0,
     zmax: 1,
     showscale: false,
-    colorscale: [[0, 'rgba(255,255,255,0)'], [1, 'rgba(255,255,255,0)']],
-    marker: {line: {color: '#cbd5e1', width: 0.42}},
+    colorscale: [[0, 'rgba(255,255,255,0.01)'], [1, 'rgba(255,255,255,0.01)']],
+    marker: {line: {color: '#94a3b8', width: 0.52}},
     hoverinfo: 'skip'
   }, {
     type: 'choropleth',
@@ -1273,7 +1275,7 @@ function renderMunicipalityMap(row, comparisonDims) {
     text: labels,
     customdata,
     colorscale,
-    marker: {line: {color: '#ffffff', width: 0.5}},
+    marker: {line: {color: '#ffffff', width: 0.55}},
     colorbar: {
       title: 'Quartis',
       tickvals: [1,2,3,4],
@@ -1315,7 +1317,7 @@ function renderMunicipalityMap(row, comparisonDims) {
   }
 
   contextEl.textContent = `${varCol} em ${primaryDim} = ${formatPlain(row[primaryDim], primaryDim)} • escala por quartis`;
-  noteEl.innerHTML = `Grupo cartografado: <strong>${groupRows.length}</strong> municípios. Quartis: Q1 ≤ ${formatNumber(breaks.q1, varCol)} • Q2 ≤ ${formatNumber(breaks.q2, varCol)} • Q3 ≤ ${formatNumber(breaks.q3, varCol)}. <span class="small">Os contornos de todos os municípios permanecem visíveis e as UFs recebem demarcação reforçada.</span>` +
+  noteEl.innerHTML = `Grupo cartografado: <strong>${groupRows.length}</strong> municípios. Quartis: Q1 ≤ ${formatNumber(breaks.q1, varCol)} • Q2 ≤ ${formatNumber(breaks.q2, varCol)} • Q3 ≤ ${formatNumber(breaks.q3, varCol)}. <span class="small">Os municípios fora da base principal também permanecem delineados no mapa, e as UFs recebem demarcação reforçada.</span>` +
     (fallbackCount ? ` <span class="small">Há ${fallbackCount} município(s) com geometria simplificada de contingência.</span>` : '');
 
   Plotly.newPlot(chartEl, traces, {
