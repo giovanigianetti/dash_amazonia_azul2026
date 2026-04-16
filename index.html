@@ -6,8 +6,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="description" content="Ficha municipal interativa da Amazônia Azul com comparações territoriais, ranking e dispersão analítica." />
 <title>Ficha Municipal Interativa — Amazônia Azul</title>
-<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
-<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<script src="plotly.min.js"></script>
+<script src="xlsx.full.min.js"></script>
+<script src="agu_data.js"></script>
+<script src="municipios_base_data.js"></script>
+<script src="br_states_data.js"></script>
 <style>
 :root {
   --bg: #f4f7fb;
@@ -437,6 +440,59 @@ button {
   .chart { min-height: 260px; }
   .map-chart { min-height: 340px; }
 }
+
+/* ===== Bloco AGU ===== */
+.agu-block { margin-top: 18px; }
+.agu-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.agu-control {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agu-control label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #334155;
+}
+.agu-control select {
+  width: 100%;
+}
+.agu-year-select {
+  min-height: 132px;
+}
+.agu-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.agu-chart-panel {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 18px;
+  background: #ffffff;
+  padding: 12px 12px 6px;
+}
+.agu-chart {
+  min-height: 360px;
+}
+.agu-table-wrap {
+  margin-top: 16px;
+}
+@media (max-width: 980px) {
+  .agu-controls,
+  .agu-chart-grid {
+    grid-template-columns: 1fr;
+  }
+  .agu-year-select {
+    min-height: 120px;
+  }
+}
+
 </style>
 </head>
 <body>
@@ -582,7 +638,7 @@ button {
    ============================= */
 const CONFIG = {
   "title": "Ficha Municipal Interativa — Amazônia Azul",
-  "sourceNote": "Base incorporada ao site: Amazônia Azul - Ficha de Programa.xlsx",
+  "sourceNote": "Base incorporada ao site: Amazônia Azul - Ficha de Programa.xlsx + base AGU agregada por convênio/ano/classificação",
   "municipalityKey": "Município",
   "idKey": "Código de município",
   "ufKey": "UF",
@@ -765,7 +821,11 @@ let appState = {
   mapGeojsonPromise: null,
   stateGeojson: null,
   stateGeojsonStatus: 'idle',
-  stateGeojsonPromise: null
+  stateGeojsonPromise: null,
+  aguData: [],
+  aguAvailableYears: [],
+  aguSelectedYears: [],
+  aguCategoryField: 'PROGRAMA'
 };
 
 function safeValue(v) {
@@ -825,6 +885,11 @@ function compareMunicipalityMatch(row, value) {
 
 async function ensureMunicipalityGeojsonLoaded() {
   if (appState.municipalityGeojson) return appState.municipalityGeojson;
+  if (window.MAP_GEOJSON_DATA) {
+    appState.municipalityGeojson = window.MAP_GEOJSON_DATA;
+    appState.mapGeojsonStatus = 'loaded';
+    return appState.municipalityGeojson;
+  }
   if (appState.mapGeojsonPromise) return appState.mapGeojsonPromise;
   appState.mapGeojsonStatus = 'loading';
   appState.mapGeojsonPromise = fetch(MAP_GEOJSON_URL)
@@ -847,6 +912,11 @@ async function ensureMunicipalityGeojsonLoaded() {
 
 async function ensureStateGeojsonLoaded() {
   if (appState.stateGeojson) return appState.stateGeojson;
+  if (window.STATE_GEOJSON_DATA) {
+    appState.stateGeojson = window.STATE_GEOJSON_DATA;
+    appState.stateGeojsonStatus = 'loaded';
+    return appState.stateGeojson;
+  }
   if (appState.stateGeojsonPromise) return appState.stateGeojsonPromise;
   appState.stateGeojsonStatus = 'loading';
   appState.stateGeojsonPromise = fetch(STATE_GEOJSON_URL)
@@ -923,6 +993,7 @@ function initializeData(data, datasetLabel='Base carregada') {
   const inferred = inferColumns(clean);
   appState.rawData = clean;
   appState.currentData = clean;
+  appState.rowLookupByCode = new Map(clean.map(r => [municipalityCode(r), r]));
   appState.categoricalColumns = inferred.categoricalColumns;
   appState.numericColumns = inferred.numericColumns;
   appState.filterColumns = inferred.filterColumns;
@@ -1055,6 +1126,437 @@ function percentDiff(value, ref) {
   if (value === null || ref === null || isNaN(value) || isNaN(ref) || ref === 0) return null;
   return ((value - ref) / ref) * 100;
 }
+
+const AGU_CATEGORY_OPTIONS = [
+  { value: 'PROGRAMA', label: 'Programa' },
+  { value: 'Divisao', label: 'Divisão' },
+  { value: 'CATEGORIA', label: 'Categoria' },
+  { value: 'CATEGORIA_ROTAS', label: 'Categoria Rotas' }
+];
+const AGU_FIELD_LABELS = Object.fromEntries(AGU_CATEGORY_OPTIONS.map(opt => [opt.value, opt.label]));
+const AGU_VALUE_LABEL = 'Execução AGU (R$)';
+
+function formatPercentValue(value, digits = 1) {
+  if (value === null || value === undefined || isNaN(Number(value))) return '—';
+  return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(value)) + '%';
+}
+
+function formatPpValue(value, digits = 1) {
+  if (value === null || value === undefined || isNaN(Number(value))) return '—';
+  return new Intl.NumberFormat('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(Number(value)) + ' p.p.';
+}
+
+function normalizeAGUCategoryValue(value) {
+  if (value === null || value === undefined) return 'Não classificado';
+  const cleaned = String(value).trim();
+  return cleaned ? cleaned : 'Não classificado';
+}
+
+function normalizeAGURow(row) {
+  if (!row) return null;
+  const codeRaw = row.COD_MUNIC_IBGE ?? row['COD_MUNIC_IBGE'];
+  if (codeRaw === null || codeRaw === undefined || String(codeRaw).trim() === '') return null;
+  const code = String(parseInt(codeRaw, 10));
+  if (!code || code === 'NaN') return null;
+  const yearRaw = row.ANO_pgto ?? row['ANO_pgto'];
+  const yearNum = yearRaw === null || yearRaw === undefined || String(yearRaw).trim() === '' ? null : Number(yearRaw);
+  return {
+    COD_MUNIC_IBGE: code,
+    ANO_pgto: Number.isFinite(yearNum) ? Math.trunc(yearNum) : null,
+    PROGRAMA: normalizeAGUCategoryValue(row.PROGRAMA ?? row['PROGRAMA']),
+    Divisao: normalizeAGUCategoryValue(row.Divisao ?? row['Divisao']),
+    CATEGORIA: normalizeAGUCategoryValue(row.CATEGORIA ?? row['CATEGORIA'] ?? row['CATEGORIA ']),
+    CATEGORIA_ROTAS: normalizeAGUCategoryValue(row.CATEGORIA_ROTAS ?? row['CATEGORIA_ROTAS']),
+    VALOR_AGREGADO: Number(row.VALOR_AGREGADO ?? row['VALOR_AGREGADO'] ?? 0) || 0
+  };
+}
+
+function loadAGUData() {
+  initializeAGUData(window.AGU_DATA || []);
+}
+
+function initializeAGUData(rawData) {
+  const allowedIds = new Set((DEFAULT_DATA || []).map(r => municipalityCode(r)).filter(Boolean));
+  const normalized = (rawData || []).map(normalizeAGURow).filter(row => row && allowedIds.has(row.COD_MUNIC_IBGE));
+  appState.aguData = normalized;
+  appState.aguAvailableYears = [...new Set(normalized.map(r => r.ANO_pgto).filter(v => v !== null))].sort((a, b) => a - b);
+  if (!Array.isArray(appState.aguSelectedYears) || !appState.aguSelectedYears.length) {
+    appState.aguSelectedYears = [...appState.aguAvailableYears];
+  } else {
+    appState.aguSelectedYears = appState.aguSelectedYears.filter(y => appState.aguAvailableYears.includes(y));
+    if (!appState.aguSelectedYears.length) appState.aguSelectedYears = [...appState.aguAvailableYears];
+  }
+  if (!AGU_FIELD_LABELS[appState.aguCategoryField]) appState.aguCategoryField = 'PROGRAMA';
+}
+
+function getAGUSelectedYears() {
+  const selected = (appState.aguSelectedYears || []).map(Number).filter(v => !isNaN(v));
+  return selected.length ? selected : [...(appState.aguAvailableYears || [])];
+}
+
+function getAGURowsForMunicipality(row) {
+  const code = municipalityCode(row);
+  if (!code) return [];
+  return appState.aguData.filter(item => item.COD_MUNIC_IBGE === code);
+}
+
+function filterAGURowsByYears(rows, years) {
+  const yearSet = years instanceof Set ? years : new Set((years || []).map(Number));
+  if (!yearSet.size) return rows.slice();
+  return rows.filter(item => item.ANO_pgto !== null && yearSet.has(Number(item.ANO_pgto)));
+}
+
+function sumAGUValue(rows) {
+  return rows.reduce((acc, item) => acc + (Number(item.VALOR_AGREGADO) || 0), 0);
+}
+
+function aggregateAGUByCategory(rows, fieldName) {
+  const totals = new Map();
+  for (const item of rows) {
+    const key = normalizeAGUCategoryValue(item[fieldName]);
+    totals.set(key, (totals.get(key) || 0) + (Number(item.VALOR_AGREGADO) || 0));
+  }
+  return [...totals.entries()]
+    .map(([category, value]) => ({ category, value }))
+    .sort((a, b) => b.value - a.value || a.category.localeCompare(b.category, 'pt-BR'));
+}
+
+function getComparatorMunicipalityCodes(row, primaryDim) {
+  if (!row || !primaryDim) return [];
+  return appState.currentData
+    .filter(item => String(item[primaryDim]) === String(row[primaryDim]))
+    .map(item => municipalityCode(item))
+    .filter(Boolean);
+}
+
+function computeAGUComparatorTotals(row, primaryDim, selectedYears) {
+  const comparatorCodes = new Set(getComparatorMunicipalityCodes(row, primaryDim));
+  if (!comparatorCodes.size) return { rows: [], total: 0, codes: comparatorCodes };
+  const rows = filterAGURowsByYears(
+    appState.aguData.filter(item => comparatorCodes.has(item.COD_MUNIC_IBGE)),
+    selectedYears
+  );
+  return {
+    rows,
+    total: sumAGUValue(rows),
+    codes: comparatorCodes
+  };
+}
+
+function computeAGURanking(row, primaryDim, selectedYears) {
+  if (!row || !primaryDim) return null;
+  const comparatorCodes = getComparatorMunicipalityCodes(row, primaryDim);
+  if (!comparatorCodes.length) return null;
+  const yearSet = new Set((selectedYears || []).map(Number));
+  const totalsByCode = new Map(comparatorCodes.map(code => [code, 0]));
+  for (const item of appState.aguData) {
+    if (!totalsByCode.has(item.COD_MUNIC_IBGE)) continue;
+    if (item.ANO_pgto === null || !yearSet.has(Number(item.ANO_pgto))) continue;
+    totalsByCode.set(item.COD_MUNIC_IBGE, (totalsByCode.get(item.COD_MUNIC_IBGE) || 0) + (Number(item.VALOR_AGREGADO) || 0));
+  }
+  const ranked = [...totalsByCode.entries()]
+    .map(([code, total]) => {
+      const currentRow = appState.rowLookupByCode?.get(code) || appState.rawData.find(item => municipalityCode(item) === code) || {};
+      return {
+        code,
+        total,
+        label: municipalityOptionLabel(currentRow)
+      };
+    })
+    .sort((a, b) => b.total - a.total || a.label.localeCompare(b.label, 'pt-BR'));
+  const selectedCode = municipalityCode(row);
+  const position = ranked.findIndex(item => item.code === selectedCode) + 1;
+  return { position: position || null, totalMunicipalities: ranked.length };
+}
+
+function buildAGUComparisonRows(municipalityAgg, comparatorAgg, municipalityTotal, comparatorTotal) {
+  const union = new Map();
+  municipalityAgg.forEach((item, index) => {
+    union.set(item.category, {
+      category: item.category,
+      municipalityValue: item.value,
+      municipalityPct: municipalityTotal ? (item.value / municipalityTotal) * 100 : 0,
+      comparatorValue: 0,
+      comparatorPct: 0,
+      rankMunicipality: index + 1
+    });
+  });
+  comparatorAgg.forEach(item => {
+    const current = union.get(item.category) || {
+      category: item.category,
+      municipalityValue: 0,
+      municipalityPct: 0,
+      comparatorValue: 0,
+      comparatorPct: 0,
+      rankMunicipality: null
+    };
+    current.comparatorValue = item.value;
+    current.comparatorPct = comparatorTotal ? (item.value / comparatorTotal) * 100 : 0;
+    if (!union.has(item.category)) union.set(item.category, current);
+  });
+  return [...union.values()]
+    .map(item => ({
+      ...item,
+      diffAbs: item.municipalityValue - item.comparatorValue,
+      diffPp: item.municipalityPct - item.comparatorPct
+    }))
+    .sort((a, b) => b.municipalityValue - a.municipalityValue || b.comparatorValue - a.comparatorValue || a.category.localeCompare(b.category, 'pt-BR'));
+}
+
+function renderAGURankingChart(targetId, municipalityAgg, municipalityTotal, categoryField) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  if (!municipalityAgg.length) {
+    target.innerHTML = '<div class="small">Sem categorias com execução para o filtro atual.</div>';
+    return;
+  }
+  const topItems = municipalityAgg.slice(0, 10).reverse();
+  Plotly.newPlot(targetId, [{
+    type: 'bar',
+    orientation: 'h',
+    y: topItems.map(item => item.category),
+    x: topItems.map(item => item.value),
+    text: topItems.map(item => formatNumber(item.value, AGU_VALUE_LABEL)),
+    textposition: 'auto',
+    customdata: topItems.map(item => [municipalityTotal ? (item.value / municipalityTotal) * 100 : 0]),
+    hovertemplate:
+      '<b>%{y}</b><br>' +
+      AGU_FIELD_LABELS[categoryField] + ': %{y}<br>' +
+      'Valor: %{text}<br>' +
+      'Participação: %{customdata[0]:.1f}%<extra></extra>'
+  }], {
+    margin: { t: 8, r: 10, b: 36, l: 160 },
+    paper_bgcolor: 'white',
+    plot_bgcolor: 'white',
+    xaxis: { title: 'Execução (R$)' }
+  }, { displayModeBar: false, responsive: true });
+}
+
+function renderAGUCompareChart(targetId, comparisonRows, primaryDim, primaryDimValue) {
+  const target = document.getElementById(targetId);
+  if (!target) return;
+  if (!comparisonRows.length) {
+    target.innerHTML = '<div class="small">Sem base comparativa disponível para o filtro atual.</div>';
+    return;
+  }
+  const topItems = comparisonRows
+    .slice()
+    .sort((a, b) => Math.max(b.municipalityPct, b.comparatorPct) - Math.max(a.municipalityPct, a.comparatorPct) || b.municipalityValue - a.municipalityValue)
+    .slice(0, 12)
+    .reverse();
+  Plotly.newPlot(targetId, [
+    {
+      type: 'bar',
+      orientation: 'h',
+      name: 'Município',
+      y: topItems.map(item => item.category),
+      x: topItems.map(item => item.municipalityPct),
+      customdata: topItems.map(item => [item.municipalityValue, item.comparatorValue, item.comparatorPct, item.diffPp]),
+      hovertemplate:
+        '<b>%{y}</b><br>' +
+        'Município: %{x:.1f}%<br>' +
+        'Valor do município: %{customdata[0]:,.2f}<br>' +
+        `${primaryDim}: ${primaryDimValue}<br>` +
+        'Grupo: %{customdata[2]:.1f}%<br>' +
+        'Valor do grupo: %{customdata[1]:,.2f}<br>' +
+        'Diferença: %{customdata[3]:.1f} p.p.<extra></extra>'
+    },
+    {
+      type: 'bar',
+      orientation: 'h',
+      name: primaryDim,
+      y: topItems.map(item => item.category),
+      x: topItems.map(item => item.comparatorPct),
+      customdata: topItems.map(item => [item.comparatorValue]),
+      hovertemplate:
+        '<b>%{y}</b><br>' +
+        `${primaryDim}: %{x:.1f}%<br>` +
+        'Valor do grupo: %{customdata[0]:,.2f}<extra></extra>'
+    }
+  ], {
+    barmode: 'group',
+    margin: { t: 8, r: 10, b: 36, l: 160 },
+    paper_bgcolor: 'white',
+    plot_bgcolor: 'white',
+    xaxis: { title: 'Participação na execução (%)' },
+    legend: { orientation: 'h', y: 1.08, x: 0 }
+  }, { displayModeBar: false, responsive: true });
+}
+
+function renderAGUBlock(row, comparisonDims) {
+  const mount = document.getElementById('aguBlockMount');
+  if (!mount) return;
+  if (!row) {
+    mount.innerHTML = '';
+    return;
+  }
+
+  const availableYears = appState.aguAvailableYears || [];
+  const selectedYears = getAGUSelectedYears();
+  const selectedYearSet = new Set(selectedYears.map(Number));
+  const categoryField = AGU_FIELD_LABELS[appState.aguCategoryField] ? appState.aguCategoryField : 'PROGRAMA';
+  const categoryLabel = AGU_FIELD_LABELS[categoryField];
+  const primaryDim = comparisonDims[0] || null;
+  const municipalityRows = filterAGURowsByYears(getAGURowsForMunicipality(row), selectedYearSet);
+  const municipalityTotal = sumAGUValue(municipalityRows);
+  const comparator = primaryDim ? computeAGUComparatorTotals(row, primaryDim, selectedYears) : { rows: [], total: null, codes: new Set() };
+  const comparatorRows = comparator.rows || [];
+  const comparatorTotal = primaryDim ? comparator.total : null;
+  const participation = primaryDim && comparatorTotal > 0 ? (municipalityTotal / comparatorTotal) * 100 : null;
+  const rankingInfo = primaryDim ? computeAGURanking(row, primaryDim, selectedYears) : null;
+  const municipalityAgg = aggregateAGUByCategory(municipalityRows, categoryField);
+  const comparatorAgg = primaryDim ? aggregateAGUByCategory(comparatorRows, categoryField) : [];
+  const comparisonRows = primaryDim ? buildAGUComparisonRows(municipalityAgg, comparatorAgg, municipalityTotal, comparatorTotal || 0) : [];
+
+  const yearsOptions = availableYears.map(year => `<option value="${year}" ${selectedYearSet.has(year) ? 'selected' : ''}>${year}</option>`).join('');
+  const categoryOptions = AGU_CATEGORY_OPTIONS.map(option => `<option value="${option.value}" ${option.value === categoryField ? 'selected' : ''}>${option.label}</option>`).join('');
+
+  const cards = `
+    <div class="block-grid">
+      <div class="metric-mini">
+        <div class="name">Execução total no município</div>
+        <div class="value">${formatNumber(municipalityTotal, AGU_VALUE_LABEL)}</div>
+        <div class="context">Anos considerados: ${selectedYears.length ? selectedYears.join(', ') : 'todos'}</div>
+      </div>
+      <div class="metric-mini">
+        <div class="name">Execução total na referência principal</div>
+        <div class="value">${primaryDim ? formatNumber(comparatorTotal, AGU_VALUE_LABEL) : '—'}</div>
+        <div class="context">${primaryDim ? `${primaryDim} = ${formatPlain(row[primaryDim], primaryDim)}` : 'Selecione uma dimensão de comparação para habilitar a referência territorial.'}</div>
+      </div>
+      <div class="metric-mini">
+        <div class="name">Participação do município</div>
+        <div class="value">${primaryDim ? formatPercentValue(participation, 1) : '—'}</div>
+        <div class="context">${primaryDim ? 'Execução do município ÷ execução total da referência principal' : 'Sem referência territorial ativa'}</div>
+      </div>
+      <div class="metric-mini">
+        <div class="name">Posição no ranking da referência</div>
+        <div class="value">${primaryDim && rankingInfo ? `${rankingInfo.position || '—'} / ${rankingInfo.totalMunicipalities || '—'}` : '—'}</div>
+        <div class="context">${primaryDim ? 'Ranking municipal por execução total em R$' : 'Sem ranking comparativo ativo'}</div>
+      </div>
+    </div>
+  `;
+
+  const municipalityMessage = !municipalityRows.length
+    ? `<div class="card"><strong>Sem execução AGU para o município e anos selecionados.</strong></div>`
+    : '';
+
+  const comparisonMessage = !primaryDim
+    ? `<div class="card">Selecione uma dimensão de comparação para habilitar a referência territorial.</div>`
+    : '';
+
+  const chartShell = municipalityRows.length ? `
+    <div class="agu-chart-grid">
+      <div class="agu-chart-panel">
+        <div class="section-title">
+          <h4>Ranking de execução em R$ por ${categoryLabel.toLowerCase()}</h4>
+          <small>Município selecionado</small>
+        </div>
+        <div id="aguRankingChart" class="agu-chart"></div>
+      </div>
+      <div class="agu-chart-panel">
+        <div class="section-title">
+          <h4>Composição percentual</h4>
+          <small>${primaryDim ? `Município versus ${primaryDim} = ${formatPlain(row[primaryDim], primaryDim)}` : 'Comparação territorial inativa'}</small>
+        </div>
+        ${primaryDim ? '<div id="aguCompareChart" class="agu-chart"></div>' : '<div class="card">Selecione uma dimensão de comparação para habilitar a referência territorial.</div>'}
+      </div>
+    </div>
+  ` : '';
+
+  let tableHtml = '';
+  if (municipalityRows.length) {
+    const tableHeaders = primaryDim
+      ? [
+          categoryLabel,
+          'Execução do município (R$)',
+          '% do município',
+          `Execução da ${primaryDim} (R$)`,
+          `% da ${primaryDim}`,
+          'Diferença absoluta (R$)',
+          'Diferença (p.p.)',
+          `Ranking da ${categoryLabel.toLowerCase()} no município`
+        ]
+      : [
+          categoryLabel,
+          'Execução do município (R$)',
+          '% do município',
+          `Ranking da ${categoryLabel.toLowerCase()} no município`
+        ];
+
+    const tableRows = (primaryDim ? comparisonRows : buildAGUComparisonRows(municipalityAgg, [], municipalityTotal, 0))
+      .map(item => {
+        const baseCells = [
+          item.category,
+          formatNumber(item.municipalityValue, AGU_VALUE_LABEL),
+          formatPercentValue(item.municipalityPct, 1)
+        ];
+        if (!primaryDim) {
+          baseCells.push(item.rankMunicipality ?? '—');
+          return baseCells;
+        }
+        baseCells.push(
+          formatNumber(item.comparatorValue, AGU_VALUE_LABEL),
+          formatPercentValue(item.comparatorPct, 1),
+          `<span class="${diffClass(item.diffAbs)}">${formatNumber(item.diffAbs, AGU_VALUE_LABEL)}</span>`,
+          `<span class="${diffClass(item.diffPp)}">${formatPpValue(item.diffPp, 1)}</span>`,
+          item.rankMunicipality ?? '—'
+        );
+        return baseCells;
+      });
+    tableHtml = `<div class="table-wrap agu-table-wrap">${makeTable(tableHeaders, tableRows)}</div>`;
+  }
+
+  mount.innerHTML = `
+    <div class="block agu-block">
+      <div class="section-title">
+        <h3>Perfil de execução AGU</h3>
+        <small>Base secundária agregada por convênio, ano e classificação</small>
+      </div>
+      <div class="agu-controls">
+        <div class="agu-control">
+          <label for="aguYearFilter">Filtro de anos</label>
+          <select id="aguYearFilter" class="agu-year-select" multiple>${yearsOptions}</select>
+          <div class="hint">Multiseleção. Se nada for marcado, o bloco volta a considerar todos os anos disponíveis.</div>
+        </div>
+        <div class="agu-control">
+          <label for="aguCategoryField">Categorização</label>
+          <select id="aguCategoryField">${categoryOptions}</select>
+          <div class="hint">Alterna entre Programa, Divisão, Categoria e Categoria Rotas.</div>
+        </div>
+      </div>
+      ${cards}
+      ${municipalityMessage}
+      ${comparisonMessage}
+      ${chartShell}
+      ${tableHtml}
+    </div>
+  `;
+
+  const yearSelect = document.getElementById('aguYearFilter');
+  if (yearSelect) {
+    yearSelect.addEventListener('change', () => {
+      const selected = [...yearSelect.selectedOptions].map(option => Number(option.value)).filter(v => !isNaN(v));
+      appState.aguSelectedYears = selected.length ? selected : [...(appState.aguAvailableYears || [])];
+      renderAll();
+    });
+  }
+
+  const categorySelect = document.getElementById('aguCategoryField');
+  if (categorySelect) {
+    categorySelect.addEventListener('change', () => {
+      appState.aguCategoryField = categorySelect.value;
+      renderAll();
+    });
+  }
+
+  if (municipalityRows.length) {
+    renderAGURankingChart('aguRankingChart', municipalityAgg, municipalityTotal, categoryField);
+    if (primaryDim) {
+      renderAGUCompareChart('aguCompareChart', comparisonRows, primaryDim, formatPlain(row[primaryDim], primaryDim));
+    }
+  }
+}
+
 
 function renderHeader(row, comparisonDims) {
   document.getElementById('municipalityTitle').textContent = row ? municipalityOptionLabel(row) : 'Nenhum município no filtro';
@@ -1506,7 +2008,9 @@ function renderBlocks(row, comparisonDims) {
       </div>
     `);
   }
+  sections.push('<div id="aguBlockMount"></div>');
   container.innerHTML = sections.join('');
+  renderAGUBlock(row, comparisonDims);
 }
 
 function makeTable(headers, rows) {
@@ -1616,7 +2120,7 @@ function bindMobileDrawer() {
 }
 
 function safeResizeCharts() {
-  ['municipalityMap', 'compareBarChart', 'lineChart', 'scatterChart', 'rankingChart'].forEach(id => {
+  ['municipalityMap', 'compareBarChart', 'lineChart', 'scatterChart', 'rankingChart', 'aguRankingChart', 'aguCompareChart'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
       try { Plotly.Plots.resize(el); } catch (e) {}
@@ -1625,6 +2129,7 @@ function safeResizeCharts() {
 }
 
 bindMobileDrawer();
+loadAGUData();
 initializeData(DEFAULT_DATA, CONFIG.sourceNote);
 </script>
 </body>
